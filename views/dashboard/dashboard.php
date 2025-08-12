@@ -238,7 +238,7 @@ function isEncryptedFormat(string $text): bool
             <div class="head-title">
                 <div class="left">
                     <span>Halaman</span>
-                    <h1>Dasboarrediah</h1>
+                    <h1>Dasboarediah</h1>
                 </div>
             </div>
 
