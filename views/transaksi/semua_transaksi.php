@@ -56,7 +56,16 @@ SELECT
     ) AS jumlah,
     t.date AS date, 
     t.time AS time,
-    GROUP_CONCAT(DISTINCT CONCAT(s.jenis, ' : ', ss.jumlah_kg, ' KG') SEPARATOR '<br>') AS detail_sampah
+GROUP_CONCAT(
+    DISTINCT 
+    CONCAT(
+        s.jenis, 
+        ' : ',
+        COALESCE(ss.jumlah_kg, js.jumlah_kg),
+        ' KG'
+    )
+    SEPARATOR '<br>'
+) AS detail_sampah
 FROM 
     transaksi t
 LEFT JOIN tarik_saldo ts ON t.id = ts.id_transaksi
@@ -336,7 +345,10 @@ function isEncryptedFormat($text)
                     <p><strong>Username:</strong> <span id="modal-username"></span></p>
                     <p><strong>Jenis Transaksi:</strong> <span id="modal-jenis"></span></p>
                     <p><strong>Jumlah:</strong> <span id="modal-jumlah"></span></p>
-                    <p><strong>Detail Sampah:</strong><br><span id="modal-detail-sampah"></span></p>
+                    <p>
+                        <strong>Detail Sampah:</strong><br>
+                        <span id="modal-detail-sampah"></span>
+                    </p>
                     <p><strong>Tanggal:</strong> <span id="modal-date"></span></p>
 
                     <button id="modal-close-btn">Tutup</button>
@@ -367,7 +379,15 @@ function isEncryptedFormat($text)
                             document.getElementById('modal-jenis').textContent = this.dataset.jenis;
                             document.getElementById('modal-jumlah').textContent = this.dataset.jumlah;
                             document.getElementById('modal-date').textContent = this.dataset.date;
-                            document.getElementById('modal-detail-sampah').innerHTML = this.dataset.detailSampah;
+
+                            // Tampilkan/hilangkan Detail Sampah sesuai jenis transaksi
+                            const detailContainer = document.getElementById('modal-detail-sampah').parentElement;
+                            if (this.dataset.jenis.toLowerCase().includes('sampah')) {
+                                document.getElementById('modal-detail-sampah').innerHTML = this.dataset.detailSampah || '-';
+                                detailContainer.style.display = 'block';
+                            } else {
+                                detailContainer.style.display = 'none';
+                            }
 
                             modal.style.display = 'block';
                         });

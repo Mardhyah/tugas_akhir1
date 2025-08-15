@@ -1,8 +1,6 @@
 <?php
 $current_page = $_GET['page'] ?? '';
-?>
 
-<?php
 // Pastikan koneksi sudah tersedia
 require_once 'config/koneksi.php';
 include_once __DIR__ . '/../layouts/header.php';
@@ -14,8 +12,6 @@ $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
 $p = isset($_GET['p']) ? (int)$_GET['p'] : 1;
 $p = max(1, $p);
 $offset = ($p - 1) * $limit;
-$search_nama = isset($_GET['search_nama']) ? trim($_GET['search_nama']) : '';
-
 $search_nama = isset($_GET['search_nama']) ? trim($_GET['search_nama']) : '';
 
 // ========= HANDLE RECOVER & DELETE ACTIONS =========
@@ -30,7 +26,6 @@ if (isset($_GET['delete_id']) || (isset($_GET['action']) && $_GET['action'] === 
     echo "<script>window.location.href='index.php?page=nasabah';</script>";
     exit();
 }
-
 
 // Kembalikan satu nasabah
 if (isset($_GET['recover_id'])) {
@@ -54,7 +49,7 @@ if (isset($_GET['restore_all'])) {
 // ========= HITUNG JUMLAH TOTAL DATA =========
 $total_query = "SELECT COUNT(*) AS total 
                 FROM user 
-                WHERE role = 'nasabah' AND status = 1 AND is_verified = 1";
+                WHERE role = 'nasabah' AND status = 1";
 
 if (!empty($search_nama)) {
     $search_escaped = mysqli_real_escape_string($koneksi, $search_nama);
@@ -73,9 +68,9 @@ if ($end_page - $start_page < $pagination_limit - 1) {
 }
 
 // ========= AMBIL DATA NASABAH AKTIF =========
-$query = "SELECT id, username, nama, email, notelp, nik, no_rek, is_verified 
+$query = "SELECT id, username, nama, email, notelp, nik, no_rek
           FROM user 
-          WHERE role = 'nasabah' AND status = 1 AND is_verified = 1";
+          WHERE role = 'nasabah' AND status = 1";
 
 if (!empty($search_nama)) {
     $query .= " AND nama LIKE '%$search_nama%'";
@@ -84,7 +79,9 @@ $query .= " ORDER BY LENGTH(id), CAST(id AS UNSIGNED) LIMIT $limit OFFSET $offse
 $nasabah_result = mysqli_query($koneksi, $query);
 
 // ========= AMBIL DATA NASABAH YANG TERHAPUS =========
-$deleted_users_query = "SELECT id, username, nama, email, notelp, nik, no_rek FROM user WHERE role = 'nasabah' AND status = 0";
+$deleted_users_query = "SELECT id, username, nama, email, notelp, nik, no_rek 
+                        FROM user 
+                        WHERE role = 'nasabah' AND status = 0";
 $deleted_users = mysqli_query($koneksi, $deleted_users_query);
 ?>
 

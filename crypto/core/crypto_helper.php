@@ -79,8 +79,14 @@ function decryptWithAES(string $encryptedData): string
 function safeDecrypt($value)
 {
     try {
-        return decryptWithAES($value);
+        $decrypted = decryptWithAES($value);
+        if ($decrypted === false || $decrypted === null) {
+            throw new Exception("Gagal dekripsi AES");
+        }
+        return $decrypted;
     } catch (Exception $e) {
+        // Debug sementara, nanti bisa dihapus
+        echo "<pre>Decrypt Error: " . $e->getMessage() . "</pre>";
         return null;
     }
 }

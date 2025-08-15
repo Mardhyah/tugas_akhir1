@@ -356,9 +356,6 @@ nav .breadcrumb-item.active {
 /* NAVBAR */
 
 
-
-
-
 /* MAIN */
 #content main {
 	width: 100%;
@@ -1222,7 +1219,7 @@ tr:hover {
         }
 
         .card-title {
-            background-color: #25745A;
+            background-color: #25745A;;
             color: white;
             padding: 10px 16px;
             border-radius: 8px;

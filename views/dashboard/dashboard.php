@@ -1,7 +1,8 @@
 <?php
 include_once __DIR__ . '/../layouts/sidebar.php';
-include_once __DIR__ . '/..//../fungsi.php';
-require_once __DIR__ . '/..//../crypto/core/crypto_helper.php';
+include_once __DIR__ . '/../../fungsi.php';
+require_once __DIR__ . '/../../crypto/core/crypto_helper.php';
+
 // Cek apakah pengguna sudah login
 checkSession();
 
@@ -10,9 +11,35 @@ $username = $_SESSION['username'];
 
 // Ambil data pengguna dari database
 $data = getUserData($koneksi, $username);
-$id_user = $data['id']; // Mendapatkan id_user dari data user yang sedang login
+$id_user = $data['id']; // Mendapatkan id_user dari user yang sedang login
 
-// Query untuk mengambil data transaksi, detail transaksi, dan informasi pengguna untuk user yang sedang login
+// --- Fungsi cek apakah terenkripsi ---
+function isEncryptedFormat(string $text): bool
+{
+    return preg_match('/^[A-Za-z0-9+\/=]+$/', $text) && strlen($text) > 64;
+}
+
+// --- Ambil saldo uang ---
+if (!empty($data['uang']) && isEncryptedFormat($data['uang'])) {
+    $uang = (float) decryptWithAES($data['uang']);
+} else {
+    $uang = (float) ($data['uang'] ?? 0);
+}
+
+// --- Ambil saldo emas ---
+if (!empty($data['emas']) && isEncryptedFormat($data['emas'])) {
+    $emas = (float) decryptWithAES($data['emas']);
+} else {
+    $emas = (float) ($data['emas'] ?? 0);
+}
+
+// Ambil harga jual emas terkini (Rp/gram)
+$current_gold_price_sell = getCurrentGoldPricesell();
+
+// Hitung saldo emas dalam rupiah
+$gold_equivalent = $emas * $current_gold_price_sell;
+
+// --- Query data transaksi ---
 $sqlTransaksi = "
 SELECT t.id AS id_transaksi, t.jenis_transaksi, t.date, t.time, 
        ts.jenis_saldo, ts.jumlah_tarik, 
@@ -30,21 +57,12 @@ LEFT JOIN sampah s ON ss.id_sampah = s.id OR js.id_sampah = s.id
 WHERE u.id = ?
 ORDER BY t.date DESC, t.time DESC
 ";
-
-
 $stmtTransaksi = $koneksi->prepare($sqlTransaksi);
 $stmtTransaksi->bind_param("i", $id_user);
 $stmtTransaksi->execute();
 $resultTransaksi = $stmtTransaksi->get_result();
 
-// Cek jika query berhasil
-if ($resultTransaksi === false) {
-    echo "Error: " . $koneksi->error;
-    exit;
-}
-
-
-// Query untuk ambil terakhir menabung dan frekuensi menabung
+// --- Query terakhir menabung & frekuensi ---
 $sqlMenabung = "
     SELECT 
         MAX(t.date) AS terakhir_menabung,
@@ -56,13 +74,10 @@ $sqlMenabung = "
     WHERE 
         t.id_user = ?
 ";
-
-
 $stmtMenabung = $koneksi->prepare($sqlMenabung);
 $stmtMenabung->bind_param("i", $id_user);
 $stmtMenabung->execute();
 $resultMenabung = $stmtMenabung->get_result();
-
 if ($resultMenabung && $rowMenabung = $resultMenabung->fetch_assoc()) {
     $data['terakhir_menabung'] = $rowMenabung['terakhir_menabung'];
     $data['frekuensi_menabung'] = $rowMenabung['frekuensi_menabung'];
@@ -71,128 +86,61 @@ if ($resultMenabung && $rowMenabung = $resultMenabung->fetch_assoc()) {
     $data['frekuensi_menabung'] = 0;
 }
 
+// --- Query kategori & harga ---
+$sqlKategori = "SELECT ks.name AS kategori, s.jenis, s.harga 
+                FROM sampah s 
+                JOIN kategori_sampah ks ON s.id_kategori = ks.id";
+$resultKategori = $koneksi->query($sqlKategori);
 
-$uang = $data['uang'] ?? 0;
-$emas = $data['emas'] ?? 0;
-
-// Ambil harga jual emas terkini (dalam Rp/gram)
-$current_gold_price_sell = getCurrentGoldPricesell();
-
-// Hitung saldo emas dalam bentuk rupiah
-$gold_equivalent = $emas * $current_gold_price_sell;
-
-
-// Query untuk mengambil data kategori dan sampah
-$sql = "SELECT ks.name AS kategori, s.jenis, s.harga 
-        FROM sampah s 
-        JOIN kategori_sampah ks ON s.id_kategori = ks.id";
-$result = $koneksi->query($sql);
-
-if ($result === false) {
-    echo "Error: " . $koneksi->error;
-    exit;
-}
-
-// Buat query grafik berdasarkan role pengguna
+// --- Query grafik ---
 if ($data['role'] == 'admin') {
-    // Jika admin, tampilkan grafik jual sampah
+    // Admin → grafik jual sampah
     $sqlChart = "
-    SELECT 
-        DATE_FORMAT(t.date, '%Y-%m') AS month,
-        SUM(js.jumlah_kg) AS total_kg,
-        SUM(js.jumlah_rp) AS total_rp
-    FROM 
-        transaksi t
-    JOIN 
-        jual_sampah js ON t.id = js.id_transaksi
-    WHERE 
-        t.jenis_transaksi = 'jual_sampah'
-    GROUP BY 
-        month
-    ORDER BY 
-        month ASC";
+    SELECT DATE_FORMAT(t.date, '%Y-%m') AS month,
+           SUM(js.jumlah_kg) AS total_kg,
+           SUM(js.jumlah_rp) AS total_rp
+    FROM transaksi t
+    JOIN jual_sampah js ON t.id = js.id_transaksi
+    WHERE t.jenis_transaksi = 'jual_sampah'
+    GROUP BY month
+    ORDER BY month ASC";
+    $stmt = $koneksi->prepare($sqlChart);
 } else {
-    // Jika nasabah, tampilkan grafik setor sampah
+    // Nasabah → grafik setor sampah
     $sqlChart = "
-    SELECT 
-        DATE_FORMAT(t.date, '%Y-%m') AS month,
-        SUM(ss.jumlah_kg) AS total_kg,
-        SUM(ss.jumlah_rp) AS total_rp
-    FROM 
-        transaksi t
-    JOIN 
-        setor_sampah ss ON t.id = ss.id_transaksi
-    WHERE 
-        t.jenis_transaksi = 'setor_sampah' AND t.id_user = ?
-    GROUP BY 
-        month
-    ORDER BY 
-        month ASC";
-}
-
-$stmt = $koneksi->prepare($sqlChart);
-if ($data['role'] != 'admin') {
-    $stmt->bind_param("i", $id_user); // Bind jika nasabah
+    SELECT DATE_FORMAT(t.date, '%Y-%m') AS month,
+           SUM(ss.jumlah_kg) AS total_kg,
+           SUM(ss.jumlah_rp) AS total_rp
+    FROM transaksi t
+    JOIN setor_sampah ss ON t.id = ss.id_transaksi
+    WHERE t.jenis_transaksi = 'setor_sampah' AND t.id_user = ?
+    GROUP BY month
+    ORDER BY month ASC";
+    $stmt = $koneksi->prepare($sqlChart);
+    $stmt->bind_param("i", $id_user);
 }
 $stmt->execute();
 $resultChart = $stmt->get_result();
-
-// Initialize arrays to hold the data
-$months = [];
-$totalKg = [];
-$totalRp = [];
-
-if ($resultChart->num_rows > 0) {
-    while ($row = $resultChart->fetch_assoc()) {
-        $months[] = $row['month'];
-        $totalKg[] = $row['total_kg'];
-        $totalRp[] = $row['total_rp'];
-    }
+$months = $totalKg = $totalRp = [];
+while ($row = $resultChart->fetch_assoc()) {
+    $months[] = $row['month'];
+    $totalKg[] = $row['total_kg'];
+    $totalRp[] = $row['total_rp'];
 }
 
-
-// Total nasabah aktif dan sudah diverifikasi
-$queryNasabah = mysqli_query($koneksi, "SELECT COUNT(*) AS total_nasabah FROM user WHERE role = 'nasabah' AND status = 1 AND is_verified = 1");
+// --- Total nasabah aktif ---
+$queryNasabah = mysqli_query($koneksi, "SELECT COUNT(*) AS total_nasabah FROM user WHERE role = 'nasabah' AND status = 1");
 $dataNasabah = mysqli_fetch_assoc($queryNasabah);
 $totalNasabah = $dataNasabah['total_nasabah'];
 
-// Total nasabah terverifikasi
-$queryVerified = mysqli_query($koneksi, "SELECT COUNT(*) AS total_verified FROM user WHERE role = 'nasabah' AND status = 1 AND is_verified = 1");
-$dataVerified = mysqli_fetch_assoc($queryVerified);
-$totalVerified = $dataVerified['total_verified'];
-
-// Total nasabah belum diverifikasi
-$queryPending = mysqli_query($koneksi, "SELECT COUNT(*) AS total_pending FROM user WHERE role = 'nasabah' AND status = 1 AND is_verified = 0");
-$dataPending = mysqli_fetch_assoc($queryPending);
-$totalPending = $dataPending['total_pending'];
-
-
-// Total Jual ke Pengepul
+// --- Total Jual ke Pengepul ---
 $queryJual = mysqli_query($koneksi, "SELECT SUM(jumlah_rp) AS total_jual FROM jual_sampah");
 $dataJual = mysqli_fetch_assoc($queryJual);
 $totalJual = $dataJual['total_jual'] ?? 0;
 
-
-$notifQuery = mysqli_query($koneksi, "
-    SELECT COUNT(*) AS jumlah 
-    FROM user 
-    WHERE role = 'nasabah' 
-        AND is_verified = 0 
-        AND verify_status = 'verified' 
-        AND status = 1
-");
-$notif = mysqli_fetch_assoc($notifQuery);
-
-// Close the statement
 $stmt->close();
-
-
-function isEncryptedFormat(string $text): bool
-{
-    // Cek apakah base64 valid dan memiliki struktur ciphertext AES (biasanya cukup panjang)
-    return preg_match('/^[A-Za-z0-9+\/=]+$/', $text) && strlen($text) > 64;
-}
 ?>
+
 
 <!DOCTYPE html>
 <html lang="en">
@@ -204,7 +152,7 @@ function isEncryptedFormat(string $text): bool
     <!-- Boxicons -->
     <link href='https://unpkg.com/boxicons@2.0.9/css/boxicons.min.css' rel='stylesheet'>
     <!-- My CSS -->
-    <link rel="stylesheet" href="../../assets/css/style.css">
+    <link rel="stylesheet" href="/bank_sampah1/assets/css/style.css">
     <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
     <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -238,7 +186,7 @@ function isEncryptedFormat(string $text): bool
             <div class="head-title">
                 <div class="left">
                     <span>Halaman</span>
-                    <h1>Dasboarediah</h1>
+                    <h1>Dasboard</h1>
                 </div>
             </div>
 
@@ -252,12 +200,11 @@ function isEncryptedFormat(string $text): bool
                         </span>
                     </li>
 
-                    <li style="position: relative;">
-                        <i class='bx bxs-bell-ring'></i>
-                        <span class="notif-badge"><?= $notif['jumlah']; ?></span>
+                    <li>
+                        <i class='bx bxs-dollar-circle'></i>
                         <span class="text">
-                            <h3><?= $notif['jumlah']; ?></h3>
-                            <a href="index.php?page=notifikasi_nasabah" class="verif-button">Yang Harus Diverifikasi</a>
+                            <h3>Rp <?php echo number_format($totalJual, 2, ',', '.'); ?></h3>
+                            <p>Total Jual ke Pengepul</p>
                         </span>
                     </li>
 
@@ -475,9 +422,9 @@ function isEncryptedFormat(string $text): bool
                             </thead>
                             <tbody>
                                 <?php
-                                if ($result->num_rows > 0) {
+                                if ($resultKategori && $resultKategori->num_rows > 0) {
                                     $no = 1;
-                                    while ($row = $result->fetch_assoc()) {
+                                    while ($row = $resultKategori->fetch_assoc()) {
                                         echo "<tr>";
                                         echo "<td>" . $no++ . "</td>";
                                         echo "<td>" . $row['kategori'] . "</td>";
@@ -488,6 +435,7 @@ function isEncryptedFormat(string $text): bool
                                 } else {
                                     echo "<tr><td colspan='4'>Tidak ada data</td></tr>";
                                 }
+
                                 ?>
                             </tbody>
                         </table>

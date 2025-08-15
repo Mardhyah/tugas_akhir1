@@ -1,5 +1,5 @@
 <?php
-$koneksi = mysqli_connect("localhost", "root", "p@ssKeiCrypto", "banksampah1");
+$koneksi = mysqli_connect("localhost", "root", "p@ssKeiCrypto", "banksampah2");
 
 function query($query)
 {
@@ -296,7 +296,8 @@ function getSampahData()
 // Fungsi untuk mengambil harga BELI emas (dari user ke sistem)
 function getCurrentGoldPriceBuy()
 {
-    $api_url = "https://logam-mulia-api.vercel.app/prices/hargaemas-org";
+    // $api_url = "https://logam-mulia-api.vercel.app/prices/hargaemas-org";
+    $api_url = "https://logam-mulia-api.vercel.app/prices/anekalogam";
 
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $api_url);
@@ -324,7 +325,9 @@ function getCurrentGoldPriceBuy()
 // Fungsi untuk mengambil harga JUAL emas (ke user)
 function getCurrentGoldPriceSell()
 {
-    $api_url = "https://logam-mulia-api.vercel.app/prices/hargaemas-org";
+    // $api_url = "https://logam-mulia-api.vercel.app/prices/hargaemas-org";
+    $api_url = "https://logam-mulia-api.vercel.app/prices/anekalogam";
+
 
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $api_url);

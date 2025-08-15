@@ -1,6 +1,10 @@
 <?php
 require_once __DIR__ . '/../core/crypto_helper.php';
+$cipher = "/mQNEnbYz9kaUqGAIevR1AqUjI7M/ircjTPUE7x0hFuRyfn7zbklCaCyYYGHG2PVIvb1rU6lTLnsPESM7hcty47RbjbDCZxmYAMDHFD5lhs=";
 
-$encrypted = 'm1b4sOydg4YVOV3hMA8w4/7EzQ+8o9SeHxMW1Rn7LQmxroN0A2GNP9J6oCJ6JwV0cHkjLIidbA7tfQH5gZc7Lg==';
-$decrypted = decryptWithAES($encrypted);
-echo "HASIL DEKRIPSI: " . $decrypted;
+try {
+    $plain = decryptWithAES($cipher);
+    echo "Hasil decrypt: " . $plain . "\n";
+} catch (Throwable $e) {
+    echo "Gagal decrypt: " . $e->getMessage() . "\n";
+}

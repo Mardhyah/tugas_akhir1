@@ -49,13 +49,6 @@ if (isset($_POST['login'])) {
                 exit;
             }
 
-            // Cek verifikasi admin untuk nasabah
-            if ($data['role'] == 'nasabah' && $data['is_verified'] != 1) {
-                $_SESSION['alert'] = ['type' => 'warning', 'message' => 'Silakan tunggu verifikasi dari admin.'];
-                header("Location: index.php?page=login");
-                exit;
-            }
-
             // Login berhasil
             $_SESSION['id'] = $data['id'];
             $_SESSION['username'] = $data['username'];

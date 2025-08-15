@@ -3,24 +3,27 @@ $current_page = $_GET['page'] ?? '';
 ?>
 
 <?php
-include_once __DIR__ . '/../layouts/header.php';
-include_once __DIR__ . '/../layouts/sidebar.php';
-include_once __DIR__ . '/../../fungsi.php';
-require_once __DIR__ . '/..//../crypto/core/crypto_helper.php';
-
-
+include_once __DIR__ . '/../layouts/header.php';  // Header tampilan
+include_once __DIR__ . '/../layouts/sidebar.php'; // Sidebar menu
+include_once __DIR__ . '/../../fungsi.php';       // Fungsi umum (termasuk harga emas)
+require_once __DIR__ . '/..//../crypto/core/crypto_helper.php'; // Fungsi enkripsi/dekripsi AES
 
 // Variabel untuk menyimpan pesan atau error
 $message = "";
-$current_gold_price_buy = getCurrentGoldPricebuy(); // For converting money to gold
-$current_gold_price_sell = getCurrentGoldPricesell(); // For converting gold to money
 
-// Jika tombol CHECK ditekan
+// Ambil harga emas terkini
+$current_gold_price_buy = getCurrentGoldPricebuy();   // Harga beli emas (Rp → gram emas)
+$current_gold_price_sell = getCurrentGoldPricesell(); // Harga jual emas (gram emas → Rp)
+
+// ================== PENCARIAN USER (TOMBOL CHECK) ==================
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['search'])) {
     $search_value = $_POST['search_value'];
+
+    // Validasi input
     if (empty($search_value)) {
         $message = "NIK tidak boleh kosong.";
     } else {
+        // Cari user berdasarkan NIK & role Nasabah
         $user_query = "SELECT user.*, dompet.uang, dompet.emas FROM user 
                     LEFT JOIN dompet ON user.id = dompet.id_user 
                     WHERE user.nik LIKE '%$search_value%' AND user.role = 'Nasabah'";
@@ -29,19 +32,27 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['search'])) {
         if ($user_result->num_rows > 0) {
             $user_data = $user_result->fetch_assoc();
 
-            // Ambil harga emas terkini
+            // Ambil harga jual emas terkini
             $current_gold_price_sell = getCurrentGoldPricesell();
 
-            // Hitung jumlah emas yang setara dengan saldo uang
-            $gold_equivalent = $user_data['emas'] * $current_gold_price_sell;
+            // Dekripsi emas sebelum digunakan
+            $emas = isset($user_data['emas']) ? decryptWithAES($user_data['emas']) : 0;
+
+            // Hitung nilai emas dalam rupiah
+            $gold_equivalent = $emas * $current_gold_price_sell;
+
+            // Simpan nilai emas hasil dekripsi untuk ditampilkan di form
+            $user_data['emas'] = $emas;
         } else {
             $message = "User dengan role 'Nasabah' tidak ditemukan.";
         }
     }
 }
 
+// ================== PROSES SIMPAN TRANSAKSI (TOMBOL SUBMIT) ==================
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit'])) {
 
+    // Ambil data dari form
     $id_user = $_POST['user_id'] ?? '';
     $jenis_transaksi = $_POST['jenis_transaksi'] ?? 'setor_sampah';
     $date = $_POST['tanggal'] . ' ' . $_POST['waktu'];
@@ -50,83 +61,82 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit'])) {
     $jumlahs = $_POST['jumlah'] ?? [];
     $hargas = $_POST['harga'] ?? [];
 
-    // Generate new ID for transaksi
+    // ====== Generate ID Transaksi ======
     $id_trans_query = "SELECT no FROM transaksi ORDER BY no DESC LIMIT 1";
     $result = $koneksi->query($id_trans_query);
     $last_id = ($result->num_rows > 0) ? $result->fetch_assoc()['no'] : 0;
     $new_id = $last_id + 1;
-
-    // Create new transaksi ID
     $id = 'TRANS' . date('Y') . str_pad($new_id, 6, '0', STR_PAD_LEFT);
 
-    // Set the default timezone to Asia/Jakarta
+    // Set timezone ke Jakarta
     date_default_timezone_set('Asia/Jakarta');
 
-    // Calculate total amount
-    $total_uang = 0;
-    $total_emas = 0; // Variable to store total gold converted
+    $total_uang = 0; // Total nilai rupiah dari semua sampah
+    $total_emas = 0; // Total gram emas dari semua sampah
 
-    // Insert into transaksi table
-    $date = date('Y-m-d'); // Get the current date and time
-    $time = date('H:i:s'); // Get the current date and time
-    $transaksi_query = "INSERT INTO transaksi (no, id, id_user, jenis_transaksi, date, time) VALUES (NULL, '$id', '$id_user', '$jenis_transaksi', '$date', '$time')";
+    // ====== Insert data utama transaksi ======
+    $date = date('Y-m-d');
+    $time = date('H:i:s');
+    $transaksi_query = "INSERT INTO transaksi (no, id, id_user, jenis_transaksi, date, time) 
+                        VALUES (NULL, '$id', '$id_user', '$jenis_transaksi', '$date', '$time')";
 
     if ($koneksi->query($transaksi_query) === TRUE) {
-        // Use the custom $id, not $koneksi->insert_id, as the id_transaksi
         $id_transaksi = $id;
 
-        // Loop to insert each row into the setor_sampah table
+        // ====== Loop semua sampah yang disetor ======
         for ($i = 0; $i < count($id_kategoris); $i++) {
             $id_kategori = $id_kategoris[$i];
             $id_jenis = $id_jeniss[$i];
             $jumlah = $jumlahs[$i];
+            // Bersihkan format harga "Rp. 1.000" menjadi 1000
             $harga = str_replace(['Rp. ', '.', ','], '', $hargas[$i]);
-            $total_uang += $harga;
 
-            // Convert money to gold based on current gold price
+            $total_uang += $harga; // Tambah ke total uang
+
+            // Konversi rupiah ke emas (gram)
             $emas_converted = $harga / $current_gold_price_buy;
             $total_emas += $emas_converted;
 
-            // Enkripsi data
+            // Enkripsi harga & emas sebelum disimpan
             $encrypted_harga = encryptWithAES((string)$harga);
             $encrypted_emas  = encryptWithAES((string)$emas_converted);
 
-            // Query insert ke tabel setor_sampah
+            // Simpan detail ke tabel setor_sampah
             $setor_sampah_query = "INSERT INTO setor_sampah (no, id_transaksi, id_sampah, jumlah_kg, jumlah_rp, jumlah_emas) 
                                     VALUES (NULL, '$id_transaksi', '$id_jenis', '$jumlah', '$encrypted_harga', '$encrypted_emas')";
-            // var_dump($setor_sampah_query);
-            // die;
-            if ($koneksi->query($setor_sampah_query) === FALSE) {
-                $message = "Error: " . $koneksi->error;
-            }
+            $koneksi->query($setor_sampah_query);
 
-            // Update the jumlah in the sampah table
+            // Update stok jumlah sampah di database
             $update_sampah_query = "UPDATE sampah SET jumlah = jumlah + $jumlah WHERE id = '$id_jenis'";
-            if ($koneksi->query($update_sampah_query) === FALSE) {
-                $message = "Error: " . $koneksi->error;
-            }
+            $koneksi->query($update_sampah_query);
         }
 
-        // Update or insert into dompet table
-        $dompet_query = "SELECT * FROM dompet WHERE id_user = ?";
+        // ====== Update atau Insert ke tabel dompet ======
+        $dompet_query = "SELECT emas FROM dompet WHERE id_user = ?";
         if ($stmt = $koneksi->prepare($dompet_query)) {
             $stmt->bind_param("i", $id_user);
             $stmt->execute();
             $result = $stmt->get_result();
 
             if ($result->num_rows > 0) {
-                // Update existing record, including both uang and emas columns
-                $dompet_update_query = "UPDATE dompet SET  emas = emas + ? WHERE id_user = ?";
-                if ($update_stmt = $koneksi->prepare($dompet_update_query)) {
-                    $update_stmt->bind_param("di", $total_emas, $id_user);
+                // Kalau user sudah punya dompet
+                $row_dompet = $result->fetch_assoc();
+                $emas_lama = !empty($row_dompet['emas']) ? decryptWithAES($row_dompet['emas']) : 0;
+                $emas_baru = (float)$emas_lama + (float)$total_emas;
+                $encrypted_emas_baru = encryptWithAES((string)$emas_baru);
+
+                $update_query = "UPDATE dompet SET emas = ? WHERE id_user = ?";
+                if ($update_stmt = $koneksi->prepare($update_query)) {
+                    $update_stmt->bind_param("si", $encrypted_emas_baru, $id_user);
                     $update_stmt->execute();
                     $update_stmt->close();
                 }
             } else {
-                // Insert new record if no existing record found
-                $dompet_insert_query = "INSERT INTO dompet (id_user, emas) VALUES (?, ?)";
-                if ($insert_stmt = $koneksi->prepare($dompet_insert_query)) {
-                    $insert_stmt->bind_param("id", $id_user,  $total_emas);
+                // Kalau user belum punya dompet → buat baru
+                $encrypted_emas = encryptWithAES((string)$total_emas);
+                $insert_query = "INSERT INTO dompet (id_user, emas) VALUES (?, ?)";
+                if ($insert_stmt = $koneksi->prepare($insert_query)) {
+                    $insert_stmt->bind_param("is", $id_user, $encrypted_emas);
                     $insert_stmt->execute();
                     $insert_stmt->close();
                 }
@@ -135,12 +145,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit'])) {
             $stmt->close();
         }
 
-        // Update frekuensi menabung dan terakhir menabung
+        // ====== Update data user (frekuensi dan tanggal terakhir menabung) ======
         $update_user_query = "UPDATE user 
-        SET frekuensi_menabung = frekuensi_menabung + 1, 
-        terakhir_menabung = ?
-        WHERE id = ?";
-
+                              SET frekuensi_menabung = frekuensi_menabung + 1, 
+                                  terakhir_menabung = ? 
+                              WHERE id = ?";
         if ($update_stmt = $koneksi->prepare($update_user_query)) {
             $tanggal_sekarang = date('Y-m-d H:i:s');
             $update_stmt->bind_param("si", $tanggal_sekarang, $id_user);
@@ -148,8 +157,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit'])) {
             $update_stmt->close();
         }
 
-
-        // Uncomment this line when ready to redirect
+        // Redirect ke halaman nota
         header("Location: index.php?page=nota&id_transaksi=$id_transaksi");
         exit;
     } else {
@@ -157,17 +165,15 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['submit'])) {
     }
 }
 
-
-
-// Fetch data kategori
+// ================== Ambil data kategori sampah ==================
 $kategori_query = "SELECT id, name FROM kategori_sampah";
 $kategori_result = $koneksi->query($kategori_query);
 
-// Fetch data jenis dan harga
+// ================== Ambil data jenis sampah ==================
 $jenis_query = "SELECT id, jenis, harga, id_kategori FROM sampah";
 $jenis_result = $koneksi->query($jenis_query);
 
-// Simpan data jenis sampah ke dalam array
+// Simpan data jenis sampah dalam array untuk akses cepat di form
 $jenis_sampah = [];
 if ($jenis_result->num_rows > 0) {
     while ($row = $jenis_result->fetch_assoc()) {

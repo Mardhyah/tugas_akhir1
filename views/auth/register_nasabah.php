@@ -27,7 +27,7 @@ function sendmail_verify($email, $verify_token, $username)
         // Email Content
         $mail->isHTML(true);
 
-        $verification_link = "http://localhost/bank_sampah/views/auth/verify_email.php?token=$verify_token";
+        $verification_link = "http://localhost/bank_sampah1/views/auth/verify_email.php?token=$verify_token";
 
         $email_template = "
         <div style='font-family: Arial, sans-serif; color: #333;'>
@@ -56,8 +56,6 @@ function sendmail_verify($email, $verify_token, $username)
         return false;
     }
 }
-
-
 
 // Ambil data role dari session jika pengguna login
 $loggedInRole = isset($_SESSION['role']) ? $_SESSION['role'] : null;
@@ -99,7 +97,6 @@ $new_no_rek = "BSLH" . str_pad($new_rek_number, 4, "0", STR_PAD_LEFT);
 
 // Proses form registrasi
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-
 
     $username = trim($_POST['username']);
     $password = trim($_POST['password']);
@@ -147,18 +144,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $verify_token = md5(uniqid($username, true));
             $verify_status = 'pending';
 
-
-            // Masukkan data ke database
-            $insert_query = "INSERT INTO user (username, password, nama, role, email, notelp, nik, alamat, tgl_lahir, kelamin, no_rek, status, gol, bidang, nip, is_verified, verify_status, verify_token) 
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-
-
-            $is_verified = 0; // Tambahkan ini sebelum bind_param
+            // Masukkan data ke database tanpa kolom is_verified
+            $insert_query = "INSERT INTO user (username, password, nama, role, email, notelp, nik, alamat, tgl_lahir, kelamin, no_rek, status, gol, bidang, nip, verify_status, verify_token) 
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
             $insert_stmt = mysqli_prepare($koneksi, $insert_query);
             mysqli_stmt_bind_param(
                 $insert_stmt,
-                "ssssssssssssssisss",
+                "sssssssssssssssss",
                 $username,
                 $hashed_password,
                 $nama,
@@ -174,7 +167,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $gol,
                 $bidang,
                 $nip,
-                $is_verified,
                 $verify_status,
                 $verify_token
             );
@@ -198,6 +190,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 ?>
+
 
 <!DOCTYPE html>
 <html lang="en">

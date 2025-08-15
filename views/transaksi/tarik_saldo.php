@@ -4,30 +4,58 @@ $current_page = $_GET['page'] ?? '';
 include_once __DIR__ . '/../../fungsi.php';
 require_once __DIR__ . '/../../crypto/core/crypto_helper.php';
 
+
+global $koneksi;
 $message = "";
 
 // Ambil harga emas terkini
-$current_gold_price_buy  = getCurrentGoldPricebuy();  // harga beli (uang → emas)
-$current_gold_price_sell = getCurrentGoldPricesell(); // harga jual (emas → uang)
+$current_gold_price_buy  = getCurrentGoldPricebuy();  // Harga beli (Rp → emas)
+$current_gold_price_sell = getCurrentGoldPricesell(); // Harga jual (emas → Rp)
 
-// Ambil transaksi terakhir untuk generate ID baru
+// ================== Ambil transaksi terakhir untuk generate ID baru ==================
 $query  = "SELECT no FROM transaksi ORDER BY no DESC LIMIT 1";
 $result = $koneksi->query($query);
 $last_id = ($result && $result->num_rows > 0) ? $result->fetch_assoc()['no'] : 0;
 
-// Fungsi generate ID transaksi unik
+// ================== Fungsi generate ID transaksi unik ==================
 function generateTransactionID($last_id)
 {
+    // Format: TRANS + Tahun + nomor urut (6 digit)
     return 'TRANS' . date('Y') . str_pad($last_id + 1, 6, '0', STR_PAD_LEFT);
 }
 
-// ----------- PROSES PENCARIAN NASABAH -----------
+// ================== Fungsi ambil saldo emas user (dengan dekripsi) ==================
+function getSaldoEmas($id_user)
+{
+    global $koneksi;
+    $stmt = $koneksi->prepare("SELECT emas FROM dompet WHERE id_user = ?");
+    $stmt->bind_param("i", $id_user);
+    $stmt->execute();
+    $result = $stmt->get_result()->fetch_assoc();
+    if (!$result || $result['emas'] === null) {
+        return 0; // Jika user belum punya saldo emas
+    }
+    return floatval(decryptWithAES($result['emas']));
+}
+
+// ================== Fungsi update saldo emas user (dengan enkripsi) ==================
+function updateSaldoEmas($id_user, $emas_baru)
+{
+    global $koneksi;
+    $emas_encrypted = encryptWithAES((string)$emas_baru); // Enkripsi sebelum simpan
+    $stmt = $koneksi->prepare("UPDATE dompet SET emas = ? WHERE id_user = ?");
+    $stmt->bind_param("si", $emas_encrypted, $id_user);
+    return $stmt->execute();
+}
+
+// ================== PROSES PENCARIAN NASABAH (TOMBOL CHECK) ==================
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['search'])) {
     $search_value = trim($_POST['search_value']);
 
     if ($search_value === '') {
         $message = "NIK tidak boleh kosong.";
     } else {
+        // Cari user berdasarkan NIK & role Nasabah
         $user_query = "
             SELECT user.*, dompet.uang, dompet.emas 
             FROM user 
@@ -42,42 +70,45 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['search'])) {
 
         if ($user_result->num_rows > 0) {
             $user_data = $user_result->fetch_assoc();
-            $gold_equivalent = $user_data['emas'] * $current_gold_price_sell;
+
+            // Dekripsi saldo emas user
+            $saldo_emas = $user_data['emas'] !== null ? floatval(decryptWithAES($user_data['emas'])) : 0;
+
+            // Hitung setara rupiah dari emas
+            $gold_equivalent = $saldo_emas * $current_gold_price_sell;
         } else {
             $message = "User dengan role 'Nasabah' tidak ditemukan.";
         }
     }
 }
 
-// ----------- PROSES PENARIKAN -----------
+// ================== PROSES PENARIKAN SALDO ==================
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['withdraw'])) {
     $id_user        = $_POST['id_user'];
-    $withdraw_type  = $_POST['withdraw_type'] ?? '';
+    $withdraw_type  = $_POST['withdraw_type'] ?? ''; // Jenis penarikan: money / gold
     $jumlah_tarik   = ($withdraw_type === 'money') ? $_POST['jumlah_uang'] : $_POST['jumlah_emas'];
-    $jumlah_tarik   = floatval($jumlah_tarik); // pastikan numeric
-    $jumlah_tarik_encrypted = encryptWithAES((string)$jumlah_tarik);
+    $jumlah_tarik   = floatval($jumlah_tarik); // Pastikan numeric
+    $jumlah_tarik_encrypted = encryptWithAES((string)$jumlah_tarik); // Enkripsi untuk simpan
 
-    // Ambil saldo emas user
-    $stmt_balance = $koneksi->prepare("SELECT emas FROM dompet WHERE id_user = ?");
-    $stmt_balance->bind_param("i", $id_user);
-    $stmt_balance->execute();
-    $user_balance = $stmt_balance->get_result()->fetch_assoc();
-    $saldo_emas   = $user_balance['emas'] ?? 0;
+    // Ambil saldo emas user (dengan dekripsi)
+    $saldo_emas = getSaldoEmas($id_user);
 
-    // Validasi input
+    // ====== Validasi input ======
     if ($jumlah_tarik <= 0) {
         $message = "Jumlah yang ditarik harus lebih dari 0.";
     } elseif ($withdraw_type === 'money') {
-        // Konversi uang → emas
+        // ------------------ PENARIKAN DALAM BENTUK UANG ------------------
+        // Konversi jumlah uang ke emas yang akan dipotong
         $gold_to_deduct = $jumlah_tarik / $current_gold_price_sell;
 
+        // Cek saldo cukup
         if ($gold_to_deduct > $saldo_emas) {
             $message = "Saldo emas tidak cukup untuk penarikan ini.";
         } else {
             try {
                 $koneksi->begin_transaction();
 
-                // Catat transaksi
+                // Catat transaksi utama
                 $id_transaksi = generateTransactionID($last_id);
                 $stmt_transaksi = $koneksi->prepare("
                     INSERT INTO transaksi (no, id, id_user, jenis_transaksi, date, time) 
@@ -86,7 +117,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['withdraw'])) {
                 $stmt_transaksi->bind_param("ss", $id_transaksi, $id_user);
                 $stmt_transaksi->execute();
 
-                // Catat ke tabel tarik_saldo
+                // Catat detail penarikan di tabel tarik_saldo
                 $stmt_tarik = $koneksi->prepare("
                     INSERT INTO tarik_saldo (no, id_transaksi, jenis_saldo, jumlah_tarik) 
                     VALUES (NULL, ?, 'tarik_uang', ?)
@@ -94,14 +125,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['withdraw'])) {
                 $stmt_tarik->bind_param("ss", $id_transaksi, $jumlah_tarik_encrypted);
                 $stmt_tarik->execute();
 
-                // Update saldo emas
-                $stmt_update = $koneksi->prepare("
-                    UPDATE dompet SET emas = emas - ? WHERE id_user = ?
-                ");
-                $stmt_update->bind_param("di", $gold_to_deduct, $id_user);
-                $stmt_update->execute();
+                // Update saldo emas di dompet (kurangi emas setara penarikan uang)
+                updateSaldoEmas($id_user, $saldo_emas - $gold_to_deduct);
 
                 $koneksi->commit();
+
+                // Redirect ke halaman nota
                 header("Location: index.php?page=nota&id_transaksi=$id_transaksi");
                 exit;
             } catch (Exception $e) {
@@ -110,6 +139,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['withdraw'])) {
             }
         }
     } elseif ($withdraw_type === 'gold') {
+        // ------------------ PENARIKAN DALAM BENTUK EMAS ------------------
         if ($jumlah_tarik <= 0) {
             $message = "Jumlah yang ditarik harus lebih dari 0 gram.";
         } elseif ($jumlah_tarik > $saldo_emas) {
@@ -118,7 +148,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['withdraw'])) {
             try {
                 $koneksi->begin_transaction();
 
-                // Catat transaksi
+                // Catat transaksi utama
                 $id_transaksi = generateTransactionID($last_id);
                 $stmt_transaksi = $koneksi->prepare("
                     INSERT INTO transaksi (no, id, id_user, jenis_transaksi, date, time) 
@@ -127,7 +157,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['withdraw'])) {
                 $stmt_transaksi->bind_param("ss", $id_transaksi, $id_user);
                 $stmt_transaksi->execute();
 
-                // Catat ke tabel tarik_saldo
+                // Catat detail penarikan emas
                 $stmt_tarik = $koneksi->prepare("
                     INSERT INTO tarik_saldo (no, id_transaksi, jenis_saldo, jumlah_tarik) 
                     VALUES (NULL, ?, 'tarik_emas', ?)
@@ -135,14 +165,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['withdraw'])) {
                 $stmt_tarik->bind_param("ss", $id_transaksi, $jumlah_tarik_encrypted);
                 $stmt_tarik->execute();
 
-                // Update saldo emas
-                $stmt_update = $koneksi->prepare("
-                    UPDATE dompet SET emas = emas - ? WHERE id_user = ?
-                ");
-                $stmt_update->bind_param("di", $jumlah_tarik, $id_user);
-                $stmt_update->execute();
+                // Update saldo emas (kurangi langsung dalam gram)
+                updateSaldoEmas($id_user, $saldo_emas - $jumlah_tarik);
 
                 $koneksi->commit();
+
+                // Redirect ke halaman nota
                 header("Location: index.php?page=nota&id_transaksi=$id_transaksi");
                 exit;
             } catch (Exception $e) {
@@ -155,24 +183,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['withdraw'])) {
     }
 }
 
-// Ambil saldo emas terbaru (untuk ditampilkan di form)
+// ================== Ambil saldo emas terbaru untuk ditampilkan ==================
 $id_user = $id_user ?? 0;
-$stmt_balance = $koneksi->prepare("SELECT emas FROM dompet WHERE id_user = ?");
-$stmt_balance->bind_param("i", $id_user);
-$stmt_balance->execute();
-$emas_balance = $stmt_balance->get_result()->fetch_assoc()['emas'] ?? 0;
+$emas_balance = getSaldoEmas($id_user);
 
+// ================== Include tampilan header dan sidebar ==================
 include_once __DIR__ . '/../layouts/header.php';
 include_once __DIR__ . '/../layouts/sidebar.php';
-
-
-
 ?>
 
-<!-- Untuk JavaScript -->
+<!-- Hidden field untuk JavaScript -->
 <input type="hidden" id="current_balance_emas" value="<?php echo htmlspecialchars($emas_balance); ?>">
-
-
 
 
 <!DOCTYPE html>
@@ -304,7 +325,17 @@ include_once __DIR__ . '/../layouts/sidebar.php';
                                 <div class="col-md-5">
                                     <p><strong>Username</strong> : <?= $user_data['username']; ?></p>
                                     <p><strong>Nama Lengkap</strong> : <?= $user_data['nama']; ?></p>
-                                    <p><strong>Saldo</strong> : <?= number_format($user_data['emas'], 4, '.', '.'); ?> g = Rp. <?= round($gold_equivalent, 2); ?></p>
+                                    <?php
+                                    $emas_plain = 0.0;
+                                    if (!empty($user_data['emas'])) {
+                                        try {
+                                            $emas_plain = (float) decryptWithAES($user_data['emas']);
+                                        } catch (\Throwable $e) {
+                                            $emas_plain = 0.0;
+                                        }
+                                    }
+                                    ?>
+                                    <p><strong>Saldo</strong> : <?= number_format($emas_plain, 4, '.', '.'); ?> g = Rp. <?= round($gold_equivalent, 2); ?></p>
                                 </div>
                             </div>
                         <?php } else { ?>
