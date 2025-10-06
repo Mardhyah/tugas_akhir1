@@ -4,6 +4,7 @@ $current_page = $_GET['page'] ?? '';
 include_once __DIR__ . '/../layouts/header.php';
 include_once __DIR__ . '/../layouts/sidebar.php';
 include_once __DIR__ . '/../../fungsi.php';
+require_once __DIR__ . '/../../crypto/core/crypto_helper.php';
 
 checkSession();
 
@@ -11,58 +12,27 @@ $username = $_SESSION['username'];
 
 $fromDate = $_GET['fromDate'] ?? '';
 $toDate = $_GET['toDate'] ?? '';
-$urutan = $_GET['urutan'] ?? 'terbaru';
+$urutan = $_GET['urutan'] ?? 'terbaru'; // terbaru atau terlama
 $jenisTransaksi = $_GET['jenisTransaksi'] ?? '';
 
-if ($jenisTransaksi == 'setor_sampah') {
-    $query = "
-        SELECT 
-            DATE_FORMAT(t.date, '%Y-%m') AS bulan,
-            SUM(ss.jumlah_rp) AS total_setor,
-            0 AS total_jual,
-            SUM(ss.jumlah_kg) AS total_kg_setor,
-            0 AS total_kg_jual
-        FROM transaksi t
-        INNER JOIN setor_sampah ss ON t.id = ss.id_transaksi
-        WHERE t.jenis_transaksi = 'setor_sampah'
-    ";
-} elseif ($jenisTransaksi == 'jual_sampah') {
-    $query = "
-        SELECT 
-            DATE_FORMAT(t.date, '%Y-%m') AS bulan,
-            0 AS total_setor,
-            SUM(js.jumlah_rp) AS total_jual,
-            0 AS total_kg_setor,
-            SUM(js.jumlah_kg) AS total_kg_jual
-        FROM transaksi t
-        INNER JOIN jual_sampah js ON t.id = js.id_transaksi
-        WHERE t.jenis_transaksi = 'jual_sampah'
-    ";
-} elseif ($jenisTransaksi == 'tarik_saldo') {
-    $query = "
-        SELECT 
-            DATE_FORMAT(t.date, '%Y-%m') AS bulan,
-            0 AS total_setor,
-            0 AS total_jual,
-            0 AS total_kg_setor,
-            0 AS total_kg_jual
-        FROM transaksi t
-        WHERE t.jenis_transaksi = 'tarik_saldo'
-    ";
-} else {
-    // Semua jenis transaksi
-    $query = "
-        SELECT 
-            DATE_FORMAT(t.date, '%Y-%m') AS bulan,
-            COALESCE(SUM(CASE WHEN t.jenis_transaksi = 'setor_sampah' THEN ss.jumlah_rp ELSE 0 END), 0) AS total_setor,
-            COALESCE(SUM(CASE WHEN t.jenis_transaksi = 'jual_sampah' THEN js.jumlah_rp ELSE 0 END), 0) AS total_jual,
-            COALESCE(SUM(CASE WHEN t.jenis_transaksi = 'setor_sampah' THEN ss.jumlah_kg ELSE 0 END), 0) AS total_kg_setor,
-            COALESCE(SUM(CASE WHEN t.jenis_transaksi = 'jual_sampah' THEN js.jumlah_kg ELSE 0 END), 0) AS total_kg_jual
-        FROM transaksi t
-        LEFT JOIN setor_sampah ss ON t.id = ss.id_transaksi
-        LEFT JOIN jual_sampah js ON t.id = js.id_transaksi
-        WHERE 1 = 1
-    ";
+// Query dasar
+$query = "
+    SELECT 
+        t.date,
+        t.jenis_transaksi,
+        ss.jumlah_rp AS setor_rp,
+        ss.jumlah_kg AS setor_kg,
+        js.jumlah_rp AS jual_rp,
+        js.jumlah_kg AS jual_kg
+    FROM transaksi t
+    LEFT JOIN setor_sampah ss ON t.id = ss.id_transaksi
+    LEFT JOIN jual_sampah js ON t.id = js.id_transaksi
+    WHERE 1=1
+";
+
+// Filter jenis transaksi
+if (!empty($jenisTransaksi)) {
+    $query .= " AND t.jenis_transaksi = '$jenisTransaksi'";
 }
 
 // Filter tanggal
@@ -73,17 +43,56 @@ if (!empty($toDate)) {
     $query .= " AND t.date <= '$toDate'";
 }
 
-// Tidak perlu filter jenisTransaksi lagi di sini!
-
-// Grouping dan urutan
-$query .= " GROUP BY bulan";
-$query .= ($urutan == 'terlama') ? " ORDER BY bulan ASC" : " ORDER BY bulan DESC";
+// Urutan berdasarkan tanggal asli
+$query .= ($urutan == 'terlama') ? " ORDER BY t.date ASC" : " ORDER BY t.date DESC";
 
 $transaksi_result = mysqli_query($koneksi, $query);
 if (!$transaksi_result) {
     die('Query failed: ' . mysqli_error($koneksi));
 }
+
+function isEncryptedFormat($data)
+{
+    if (empty($data)) return false;
+
+    if (preg_match('/^[A-Za-z0-9\/\+=]+$/', $data) && strlen($data) > 24) {
+        return true;
+    }
+
+    return false;
+}
+
+// Rekap manual di PHP per bulan, dari terbaru ke terlama
+$rekap = [];
+while ($row = mysqli_fetch_assoc($transaksi_result)) {
+    $bulan = date('F Y', strtotime($row['date'])); // format bulan dari tanggal asli
+
+    if (!isset($rekap[$bulan])) {
+        $rekap[$bulan] = [
+            'total_setor' => 0,
+            'total_jual' => 0,
+            'total_kg_setor' => 0,
+            'total_kg_jual' => 0
+        ];
+    }
+
+    if ($row['jenis_transaksi'] == 'setor_sampah') {
+        $rp = isEncryptedFormat($row['setor_rp']) ? safeDecrypt($row['setor_rp']) : $row['setor_rp'];
+        $rekap[$bulan]['total_setor'] += (float) $rp;
+        $rekap[$bulan]['total_kg_setor'] += (float) $row['setor_kg'];
+    } elseif ($row['jenis_transaksi'] == 'jual_sampah') {
+        $rp = isEncryptedFormat($row['jual_rp']) ? safeDecrypt($row['jual_rp']) : $row['jual_rp'];
+        $rekap[$bulan]['total_jual'] += (float) $rp;
+        $rekap[$bulan]['total_kg_jual'] += (float) $row['jual_kg'];
+    }
+}
+
+
 ?>
+
+
+
+
 
 
 <!DOCTYPE html>
@@ -101,6 +110,7 @@ if (!$transaksi_result) {
 
     <title>BankSampah</title>
 </head>
+
 
 <body>
 
@@ -189,36 +199,57 @@ if (!$transaksi_result) {
                             </div>
                         </div>
                         <!-- Start of Transaction Table Section -->
+                        <!-- Start of Transaction Table Section -->
                         <div class="tabular--wrapper">
-                            <table class="table table-bordered">
+                            <table class="table">
                                 <thead>
                                     <tr>
                                         <th>Bulan</th>
-                                        <th>Total Setor Sampah (Rp)</th>
-                                        <th>Total Jual Sampah (Rp)</th>
-                                        <th>Total Kg Setor Sampah</th>
-                                        <th>Total Kg Jual Sampah</th>
+                                        <th>Jenis</th>
+                                        <th>Total (Rp)</th>
+                                        <th>Total (Kg)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <?php if (mysqli_num_rows($transaksi_result) > 0): ?>
-                                        <?php while ($row = mysqli_fetch_assoc($transaksi_result)): ?>
-                                            <tr>
-                                                <td><?php echo $row['bulan']; ?></td>
-                                                <td><?php echo number_format($row['total_setor'], 2); ?></td>
-                                                <td><?php echo number_format($row['total_jual'], 2); ?></td>
-                                                <td><?php echo number_format($row['total_kg_setor'], 2); ?></td>
-                                                <td><?php echo number_format($row['total_kg_jual'], 2); ?></td>
-                                            </tr>
-                                        <?php endwhile; ?>
+                                    <?php if (!empty($rekap)): ?>
+                                        <?php foreach ($rekap as $bulan => $data): ?>
+                                            <?php
+                                            $rowspan = 0;
+                                            if ($data['total_setor'] > 0) $rowspan++;
+                                            if ($data['total_jual'] > 0) $rowspan++;
+                                            if ($rowspan == 0) continue;
+                                            $firstRow = true;
+                                            ?>
+                                            <?php if ($data['total_setor'] > 0): ?>
+                                                <tr>
+                                                    <?php if ($firstRow): ?>
+                                                        <td rowspan="<?= $rowspan ?>"><?= $bulan ?></td>
+                                                        <?php $firstRow = false; ?>
+                                                    <?php endif; ?>
+                                                    <td>Setor</td>
+                                                    <td><?= number_format($data['total_setor'], 0, ',', '.') ?></td>
+                                                    <td><?= number_format($data['total_kg_setor'], 0, ',', '.') ?></td>
+                                                </tr>
+                                            <?php endif; ?>
+                                            <?php if ($data['total_jual'] > 0): ?>
+                                                <tr>
+                                                    <td>Jual</td>
+                                                    <td><?= number_format($data['total_jual'], 0, ',', '.') ?></td>
+                                                    <td><?= number_format($data['total_kg_jual'], 0, ',', '.') ?></td>
+                                                </tr>
+                                            <?php endif; ?>
+                                        <?php endforeach; ?>
                                     <?php else: ?>
                                         <tr>
-                                            <td colspan="5" class="text-center">No transactions found for the selected filters.</td>
+                                            <td colspan="4" class="text-center">No transactions found for the selected filters.</td>
                                         </tr>
                                     <?php endif; ?>
                                 </tbody>
                             </table>
                         </div>
+
+                        <!-- End of Transaction Table Section -->
+
                         <!-- End of Transaction Table Section -->
 
                     </div>

@@ -23,6 +23,7 @@ $limit = max(1, $limit); // minimal 1
 
 $offset = ($halaman - 1) * $limit;
 
+
 $query = "
 SELECT 
     t.id AS id, 
@@ -45,27 +46,37 @@ SELECT
             WHEN js.id_transaksi IS NOT NULL THEN 'Jual Sampah'
         END 
     SEPARATOR ', ') AS jenis_transaksi,
-    IFNULL(
-        CASE
-            WHEN COUNT(ss.id_transaksi) > 0 THEN CONCAT(COUNT(ss.id_transaksi), ' item')
-            WHEN COUNT(js.id_transaksi) > 0 THEN CONCAT(COUNT(js.id_transaksi), ' item')
-            WHEN ts.id_transaksi IS NOT NULL THEN ts.jumlah_tarik
-            WHEN ps.id_transaksi IS NOT NULL THEN ps.jumlah
-            ELSE '0'
-        END, '0'
-    ) AS jumlah,
+
+    CASE
+        -- ✅ Setor Sampah → jumlah item = banyak baris setor
+        WHEN COUNT(ss.id_transaksi) > 0 THEN CONCAT(COUNT(ss.id_transaksi), ' item')
+        
+        -- ✅ Jual Sampah → jumlah item dihitung dari SUM jumlah_kg
+        WHEN COUNT(js.id_transaksi) > 0 THEN CONCAT(SUM(js.jumlah_kg), ' item')
+        
+        -- ✅ Tarik Saldo
+        WHEN ts.id_transaksi IS NOT NULL THEN ts.jumlah_tarik
+        
+        -- ✅ Pindah Saldo
+        WHEN ps.id_transaksi IS NOT NULL THEN ps.jumlah
+        
+        ELSE '0'
+    END AS jumlah,
+
     t.date AS date, 
     t.time AS time,
-GROUP_CONCAT(
-    DISTINCT 
-    CONCAT(
-        s.jenis, 
-        ' : ',
-        COALESCE(ss.jumlah_kg, js.jumlah_kg),
-        ' KG'
-    )
-    SEPARATOR '<br>'
-) AS detail_sampah
+
+    GROUP_CONCAT(
+        DISTINCT 
+        CONCAT(
+            s.jenis, 
+            ' : ',
+            COALESCE(ss.jumlah_kg, js.jumlah_kg),
+            ' KG'
+        )
+        SEPARATOR '<br>'
+    ) AS detail_sampah
+
 FROM 
     transaksi t
 LEFT JOIN tarik_saldo ts ON t.id = ts.id_transaksi
@@ -74,6 +85,7 @@ LEFT JOIN setor_sampah ss ON t.id = ss.id_transaksi
 LEFT JOIN jual_sampah js ON t.id = js.id_transaksi
 LEFT JOIN sampah s ON (ss.id_sampah = s.id OR js.id_sampah = s.id)
 LEFT JOIN user u ON t.id_user = u.id
+
 WHERE 
     t.id LIKE '%$search%' OR 
     u.username LIKE '%$search%' OR 
@@ -89,10 +101,13 @@ WHERE
         ('Pindah Saldo (Emas)' LIKE '%$search%' AND ps.jenis_konversi = 'konversi_emas') OR
         ('Pindah Saldo (Uang)' LIKE '%$search%' AND ps.jenis_konversi = 'konversi_uang')
     ))
+
 GROUP BY 
     t.id, t.date, t.time, u.username, ts.jenis_saldo, ps.jenis_konversi
+
 ORDER BY 
     t.date DESC, t.time DESC
+
 LIMIT $limit OFFSET $offset
 ";
 
@@ -204,7 +219,9 @@ function isEncryptedFormat($text)
                                         <th>ID Transaksi</th>
                                         <th>Username</th>
                                         <th>Jenis Transaksi</th>
-                                        <th>Jumlah</th>
+                                        <th>Jumlah Item</th>
+                                        <th>Nominal (Rp)</th>
+                                        <th>Berat (gram)</th>
                                         <th>Tanggal</th>
                                         <th>Jam</th>
                                         <th>Action</th>
@@ -214,13 +231,16 @@ function isEncryptedFormat($text)
                                     <?php if (count($transaksi_result) > 0): ?>
                                         <?php foreach ($transaksi_result as $row): ?>
                                             <?php
-                                            $jumlah = $row['jumlah'];
-                                            $jumlah_display = $jumlah;
+                                            $jumlah_item = '-';
+                                            $nominal_rp = '-';
+                                            $berat_gram = '-';
+
                                             $jenisTransaksi = strtolower($row['jenis_transaksi']);
                                             $jenisSaldo = isset($row['jenis_saldo']) ? strtolower($row['jenis_saldo']) : '';
                                             $idTransaksi = $row['id_transaksi'] ?? $row['id'];
 
-                                            if (strpos($jenisTransaksi, 'setor') !== false && strpos($jenisTransaksi, 'sampah') !== false) {
+                                            // ✅ Setor Sampah
+                                            if (strpos($jenisTransaksi, 'setor sampah') !== false) {
                                                 $result_rp = query("SELECT jumlah_rp FROM setor_sampah WHERE id_transaksi = '$idTransaksi'");
 
                                                 $total_rp_decrypted = 0;
@@ -234,34 +254,53 @@ function isEncryptedFormat($text)
                                                             $total_rp_decrypted += (float)$decrypted_rp;
                                                         }
                                                     } catch (Exception $e) {
-                                                        // gagal dekripsi, bisa skip atau log error
+                                                        // skip jika gagal dekripsi
                                                     }
                                                 }
 
-                                                $jumlah_display = $total_item . ' item (Rp ' . number_format($total_rp_decrypted, 2, ',', '.') . ')';
-                                            } elseif (isEncryptedFormat($jumlah)) {
-                                                try {
-                                                    $decrypted = decryptWithAES($jumlah);
-
-                                                    if ($jenisSaldo === 'emas' || $jenisSaldo === 'tarik_emas' || strpos($jenisSaldo, 'emas') !== false) {
-                                                        $jumlah_display = number_format((float)$decrypted, 2, ',', '.') . ' gram';
-                                                    } elseif (is_numeric($decrypted)) {
-                                                        $jumlah_display = "Rp. " . number_format((float)$decrypted, 2, ',', '.');
-                                                    } else {
-                                                        $jumlah_display = '❌ Gagal dekripsi';
-                                                    }
-                                                } catch (Exception $e) {
-                                                    $jumlah_display = '❌ Gagal dekripsi';
-                                                }
+                                                $jumlah_item = $total_item;
+                                                $nominal_rp = "Rp " . number_format($total_rp_decrypted, 2, ',', '.');
                                             }
 
-                                            ?>
+                                            // ✅ Jual Sampah
+                                            elseif (strpos($jenisTransaksi, 'jual sampah') !== false) {
+                                                $result_rp = query("SELECT jumlah_rp FROM jual_sampah WHERE id_transaksi = '$idTransaksi'");
 
+                                                $total_rp = 0;
+                                                $total_item = count($result_rp);
+
+                                                foreach ($result_rp as $item) {
+                                                    // kalau tidak terenkripsi, langsung jumlahkan
+                                                    $total_rp += (float)$item['jumlah_rp'];
+                                                }
+
+                                                $jumlah_item = $total_item;
+                                                $nominal_rp = "Rp " . number_format($total_rp, 2, ',', '.');
+                                            }
+
+
+                                            // ✅ Tarik Saldo (Uang / Emas)
+                                            elseif (isEncryptedFormat($row['jumlah'])) {
+                                                try {
+                                                    $decrypted = decryptWithAES($row['jumlah']);
+
+                                                    if ($jenisSaldo === 'emas' || strpos($jenisSaldo, 'emas') !== false) {
+                                                        $berat_gram = number_format((float)$decrypted, 2, ',', '.');
+                                                    } elseif (is_numeric($decrypted)) {
+                                                        $nominal_rp = "Rp " . number_format((float)$decrypted, 2, ',', '.');
+                                                    }
+                                                } catch (Exception $e) {
+                                                    $nominal_rp = '❌ Gagal dekripsi';
+                                                }
+                                            }
+                                            ?>
                                             <tr>
                                                 <td><?= $row['id']; ?></td>
                                                 <td><?= $row['username']; ?></td>
                                                 <td><?= $row['jenis_transaksi']; ?></td>
-                                                <td><?= $jumlah_display; ?></td>
+                                                <td><?= $jumlah_item; ?></td>
+                                                <td><?= $nominal_rp; ?></td>
+                                                <td><?= $berat_gram; ?></td>
                                                 <td><?= $row['date']; ?></td>
                                                 <td><?= $row['time']; ?></td>
                                                 <td>
@@ -269,7 +308,9 @@ function isEncryptedFormat($text)
                                                         data-id="<?= $row['id']; ?>"
                                                         data-username="<?= $row['username']; ?>"
                                                         data-jenis="<?= $row['jenis_transaksi']; ?>"
-                                                        data-jumlah="<?= $jumlah_display; ?>"
+                                                        data-jumlah-item="<?= $jumlah_item; ?>"
+                                                        data-nominal="<?= $nominal_rp; ?>"
+                                                        data-berat="<?= $berat_gram; ?>"
                                                         data-date="<?= $row['date']; ?>"
                                                         data-detail-sampah="<?= $row['detail_sampah']; ?>">
                                                         Detail
@@ -279,13 +320,12 @@ function isEncryptedFormat($text)
                                         <?php endforeach; ?>
                                     <?php else: ?>
                                         <tr>
-                                            <td colspan="7">Tidak ada transaksi ditemukan.</td>
+                                            <td colspan="9">Tidak ada transaksi ditemukan.</td>
                                         </tr>
                                     <?php endif; ?>
-
-
                                 </tbody>
                             </table>
+
 
                             <!-- Pagination -->
                             <div class="pagination-wrapper">

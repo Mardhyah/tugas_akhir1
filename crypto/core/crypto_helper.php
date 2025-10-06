@@ -79,14 +79,19 @@ function decryptWithAES(string $encryptedData): string
 function safeDecrypt($value)
 {
     try {
-        $decrypted = decryptWithAES($value);
-        if ($decrypted === false || $decrypted === null) {
-            throw new Exception("Gagal dekripsi AES");
+        if (empty($value)) {
+            return null;
         }
-        return $decrypted;
+
+        // cek dulu apakah format terenkripsi
+        if (!isEncryptedFormat($value)) {
+            return $value; // anggap plaintext
+        }
+
+        $decrypted = decryptWithAES($value);
+        return $decrypted !== false ? $decrypted : null;
     } catch (Exception $e) {
-        // Debug sementara, nanti bisa dihapus
-        echo "<pre>Decrypt Error: " . $e->getMessage() . "</pre>";
+        // jangan echo error di sini, biar tidak flooding
         return null;
     }
 }
